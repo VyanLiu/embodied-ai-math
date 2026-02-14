@@ -43,7 +43,6 @@ def is_supreme(e_set, s_set):
 #1.35 Theorem If a1,...,an and b1,...,bn are complex numbers, then |Sigma a * b*|^2 <= Sigma|a|^2 * Sigma|b|^2
 
 def check_schwarz_complex(a, b):
-    f_is_valid = False
     dot_product_ab = np.vdot(a, b) # vdot means complex_number * conjugate of complex_number
     dot_product_aa = np.vdot(a, a)
     dot_product_bb = np.vdot(b, b)
