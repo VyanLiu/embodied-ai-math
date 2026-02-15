@@ -26,14 +26,14 @@ from typing import List, Tuple, Callable, Optional
 #     (j) E is dense in X if every point of X is a limit point of E, or a point of E or both.
 
 #Define a class type of Metric spaces, use different type of Distance to achieve verify different spaces as metric spaces
-def are_points_equivalent(p1: Tuple[float, ...], p2: Tuple[float,...], eps: float = 1e-9) -> bool:
+def are_points_equivalent(p1: Tuple[float, ...], p2: Tuple[float,...], eps: float = 1e-11) -> bool:
     """
     Check if two points are equivalent within a given tolerance.
     
     Args:
         p1: First point as a tuple of floats
         p2: Second point as a tuple of floats
-        eps: Tolerance level for comparison (default 1e-9)
+        eps: Tolerance level for comparison (default 1e-11)
         
     Returns:
         True if points are equivalent within tolerance, False otherwise
@@ -115,7 +115,7 @@ class MetricSpace:
                 print(f"Axiom (b) failed: d({p}, {q}) = {dist_pq} != d({q}, {p}) = {dist_qp}")
                 all_passed = False
             # (c) triangle inequality: d(p, q) <= d(p, r) + d(r, q)
-            if dist_pq > dist_pr + dist_rq:
+            if dist_pq > dist_pr + dist_rq + 1e-10:
                 print(f"Axiom (c) failed: d({p}, {q}) = {dist_pq} > d({p}, {r}) + d({r}, {q}) = {dist_pr + dist_rq}")
                 all_passed = False
 
@@ -139,8 +139,8 @@ class MetricSpace:
         Returns:
             List of points in the neighborhood
         """
-        if r < 0:
-            raise ValueError("Radius must be non-negative")
+        if r <= 0:
+            raise ValueError("Radius must be positive")
         
         nr: List[Tuple[float, ...]] = []
         for point in self.x:
@@ -170,36 +170,31 @@ class MetricSpace:
         Returns:
             True if p is a limit point of E, False otherwise
         """
-        if epsilon_list is not None:
-            if not all(isinstance(eps, (int, float)) and eps > 0 for eps in epsilon_list):
-                raise ValueError("All epsilon values must be positive numbers")
-        
-        # Since computers cannot check all epsilon > 0, we approximate this by testing a sequence of sufficiently small epsilon values
-        # Set default epsilon list value
-        f_is_limit_point = False
         if epsilon_list is None:
             epsilon_list = [10**-k for k in range(1, 11)]
 
+        if not all(isinstance(eps, (int, float)) and eps > 0 for eps in epsilon_list):
+            raise ValueError("All epsilon values must be positive numbers")
+
+        # For p to be a limit point, *every* neighborhood must contain a point from E other than p.
+        # We approximate this by checking a series of shrinking neighborhoods.
         for eps in epsilon_list:
-            try:
-                # Use enough neighborhoods instead of arbitrary ones
-                nr = self.find_neighborhood(p, eps)
-                for q in e:
-                    # Test if q is one of elements in every neighborhood of p and q is not equal to p
-                    if q in nr and not are_points_equivalent(q, p):
-                        f_is_limit_point = True
-                        break
-                if f_is_limit_point:
-                    break
-            except Exception as ex:
-                print(f"Error processing neighborhood with radius {eps}: {ex}")
-                continue
+            neighborhood = self.find_neighborhood(p, eps)
+            
+            # Check if this neighborhood contains a point q from E where q is not p.
+            point_found_in_neighborhood = False
+            for point_in_e in e:
+                if not are_points_equivalent(p, point_in_e): # Condition: q != p
+                    if any(are_points_equivalent(point_in_e, n_point) for n_point in neighborhood):
+                        point_found_in_neighborhood = True
+                        break # Found a suitable point for this neighborhood, check next smaller one.
+            
+            if not point_found_in_neighborhood:
+                # If any neighborhood lacks such a point, then p is not a limit point.
+                return False
                 
-        if f_is_limit_point:
-            print("p is a limit point of the set E")
-        else:
-            print("p is not a limit point of the set E")
-        return f_is_limit_point
+        # If all tested neighborhoods contained a suitable point, we conclude it's a limit point.
+        return True
 
     def is_isolated_point(self, p: Tuple[float, ...], e: List[Tuple[float, ...]]) -> bool:
         """
@@ -214,45 +209,46 @@ class MetricSpace:
         Returns:
             True if p is an isolated point of E, False otherwise
         """
-        if p not in e or self.is_limit_point(p, e):
-            f_is_isolated_point = False
-        else:
-            f_is_isolated_point = True
+        is_in_e = any(are_points_equivalent(p, point_in_e) for point_in_e in e)
+        return is_in_e and not self.is_limit_point(p, e)
 
-        return f_is_isolated_point
-
-    def is_interior_point(self, p: Tuple[float, ...], e: List[Tuple[float, ...]], r: float) -> bool:
+    def is_interior_point(self, p: Tuple[float, ...], e: List[Tuple[float, ...]]) -> bool:
         """
         Check if a point p is an interior point of set E.
         
-        A point p is an interior point of E if there is a neighborhood N of p such that N is included in E.
+        A point p is an interior point of E if there is a neighborhood N of p 
+        such that N is included in E. This is true if there's a non-zero distance
+        between p and the complement of E.
         
         Args:
-            p: Point to check if it's an interior point
-            e: Set E to check against
-            r: Radius of the neighborhood to test
+            p: Point to check if it's an interior point.
+            e: Set E to check against.
             
         Returns:
-            True if p is an interior point of E, False otherwise
+            True if p is an interior point of E, False otherwise.
         """
-        if r < 0:
-            raise ValueError("Radius must be non-negative")
-        
-        try:
-            nr = self.find_neighborhood(p, r)
-        except Exception as ex:
-            print(f"Error finding neighborhood: {ex}")
+        # A point must be in E to be an interior point of E.
+        if not any(are_points_equivalent(p, point_in_e) for point_in_e in e):
             return False
+
+        # Find all points in the space that are not in E.
+        complement_e = self.find_complement_set(e)
         
-        # Check if every point in the neighborhood is in E
-        for q in nr:
-            # If any point in the neighborhood is not in E, p is not an interior point
-            if not any(are_points_equivalent(q, ele) for ele in e):
-                print("p is not an interior point of the set E")
-                return False
-        
-        print("p is an interior point of the set E")
-        return True
+        # If the complement is empty, E is the whole space, so any point in E is an interior point.
+        if not complement_e:
+            return True
+            
+        # Find the minimum distance from p to any point outside of E.
+        min_dist_to_complement = float('inf')
+        for q in complement_e:
+            dist = self.d(p, q)
+            if dist < min_dist_to_complement:
+                min_dist_to_complement = dist
+                
+        # If the minimum distance is greater than a small tolerance, then there exists 
+        # a neighborhood of p (e.g., with radius min_dist_to_complement / 2) that 
+        # is entirely within E.
+        return min_dist_to_complement > 1e-11
 
     def is_closed_set(self, e: List[Tuple[float, ...]]) -> bool:
         """
@@ -266,18 +262,20 @@ class MetricSpace:
         Returns:
             True if E is closed, False otherwise
         """
-        # If e is empty, it's closed by definition
+        # The empty set is closed by definition.
         if not e:
             return True
         
-        # Check if any point in the metric space \ E is a limit point of E
-        points_not_in_e = [point for point in self.x if not any(are_points_equivalent(point, p) for p in e)]
-        for point in points_not_in_e:
-            if self.is_limit_point(point, e):
-                return False  # Found a limit point of E that's not in E
+        # Check if any point in the metric space is a limit point of E.
+        # If it is, it must also be in E.
+        for p in self.x:
+            if self.is_limit_point(p, e):
+                # Found a limit point. Check if it's in E.
+                if not any(are_points_equivalent(p, point_in_e) for point_in_e in e):
+                    return False  # Found a limit point of E that's not in E.
         return True
 
-    def is_open_set(self, e: List[Tuple[float, ...]], r: float) -> bool:
+    def is_open_set(self, e: List[Tuple[float, ...]]) -> bool:
         """
         Check if a set E is open.
         
@@ -285,25 +283,20 @@ class MetricSpace:
         
         Args:
             e: Set E to check if it's open
-            r: Radius to use for checking interior points
             
         Returns:
             True if E is open, False otherwise
         """
-        if r < 0:
-            raise ValueError("Radius must be non-negative")
+        # The empty set is open by definition.
+        if not e:
+            return True
         
-        f_is_open_set = True
+        # Check if every point in E is an interior point.
         for p in e:
-            try:
-                if not self.is_interior_point(p, e, r):
-                    f_is_open_set = False
-                    break
-            except Exception as ex:
-                print(f"Error checking if {p} is an interior point: {ex}")
-                f_is_open_set = False
-                break
-        return f_is_open_set
+            if not self.is_interior_point(p, e):
+                return False  # Found a point that is not an interior point.
+        
+        return True # All points in E are interior points.
 
     def find_complement_set(self, e: List[Tuple[float, ...]]) -> List[Tuple[float, ...]]:
         """
@@ -345,33 +338,16 @@ class MetricSpace:
         Returns:
             True if E is perfect, False otherwise
         """
-        if e is None:
-            raise ValueError("Set E cannot be None")
+        if not e:
+            return False # The empty set is not perfect.
         
-        # Check if every point in E is a limit point of E
-        f_limit_sets_verified = True
-        for p in e:
-            try:
-                if not self.is_limit_point(p, e):
-                    f_limit_sets_verified = False
-                    break
-            except Exception as ex:
-                print(f"Error checking if {p} is a limit point of E: {ex}")
-                f_limit_sets_verified = False
-                break
-
-        # Check if E is closed
-        try:
-            is_closed = self.is_closed_set(e)
-        except Exception as ex:
-            print(f"Error checking if E is closed: {ex}")
+        is_closed = self.is_closed_set(e)
+        if not is_closed:
             return False
-        
-        if is_closed and f_limit_sets_verified:
-            print("The set is perfect")
-            f_is_perfect = True
-        else:
-            print("The set is not a perfect set")
-            f_is_perfect = False
+            
+        # Check if every point in E is a limit point of E
+        for p in e:
+            if not self.is_limit_point(p, e):
+                return False
 
-        return f_is_perfect
+        return True

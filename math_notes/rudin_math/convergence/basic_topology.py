@@ -7,8 +7,9 @@ It includes various distance functions and examples of metric spaces.
 import math
 from typing import Tuple
 
-import metric_space
-from math_notes.rudin_math.convergence.metric_space import MetricSpace
+# Removed unused 'import metric_space'
+from math_notes.rudin_math.convergence.metric_space import MetricSpace, are_points_equivalent
+
 
 #Euclidean Distance
 def cal_euclidean_distance(p: Tuple[float, ...], q: Tuple[float, ...]) -> float:
@@ -27,7 +28,7 @@ def cal_euclidean_distance(p: Tuple[float, ...], q: Tuple[float, ...]) -> float:
     """
     if len(p) != len(q):
         raise ValueError(f"Points must have the same dimension. Got {len(p)} and {len(q)}")
-    diffs = [(pi - qi)**2 for pi, qi in zip(p, q)]
+    diffs = [(pi - qi) for pi, qi in zip(p, q)]
     return math.hypot(*diffs)
 
 def cal_manhattan_distance(p: Tuple[float, ...], q: Tuple[float, ...]) -> float:
@@ -98,10 +99,10 @@ def cal_discrete_metric(p: Tuple[float, ...], q: Tuple[float, ...], tolerance: f
         p: First point as a tuple of coordinates
         q: Second point as a tuple of coordinates
         tolerance: Tolerance for comparing equality of points
-        
+    
     Returns:
-        0 if points are equal, 1 otherwise
-        
+        0.0 if points are equal, 1.0 otherwise
+    
     Raises:
         ValueError: If points have different dimensions
     """
@@ -110,9 +111,9 @@ def cal_discrete_metric(p: Tuple[float, ...], q: Tuple[float, ...], tolerance: f
     
     # Check if points are equivalent within tolerance
     if all(abs(pi - qi) < tolerance for pi, qi in zip(p, q)):
-        return 0
+        return 0.0
     else:
-        return 1
+        return 1.0
 
 def cal_fake_metric_distance(p: Tuple[float, ...], q: Tuple[float, ...]) -> float:
     """
@@ -138,7 +139,8 @@ def cal_fake_metric_distance(p: Tuple[float, ...], q: Tuple[float, ...]) -> floa
 if __name__ == '__main__':
     # Define sample points in 3D space
     A = [
-        (3.499999999999, 2.40000000000001, 4.7999999999999), 
+        (3.499999999999, 2.40000000000001, 4.7999999999999),
+        (3.5, 2.4, 4.8),
         (1.2, 3.7, 0.8), 
         (0.9, 0.4, 1.8), 
         (0.2, 9.1, 100.2), 
@@ -147,15 +149,25 @@ if __name__ == '__main__':
         (1.2, 0.2, 4.5), 
         (3.2, 18.23, 0.99)
     ]
-    
+    #In a finite metric space where every point is a certain distance from every other point.
+    #every subset is simultaneously open and closed.
+    #This type of space is called a discrete space.
+    #This example proves that finite spaces don't have a limit point.
     # Define a subset E of A
     E = [
         (3.499999999999, 2.40000000000001, 4.7999999999999),
+        (3.5, 2.4, 4.8),
         (0.9, 0.4, 1.8), 
-        (3.7, 2.1, 1.25),  # Fixed syntax error: was (3.7, 2.1, 1,25)
-        (1.2, 4.5, 3.8)    # Fixed syntax error: was (1.2, 4.5, 3,8)
+        (1.2, 0.2, 4.5),  # Fixed syntax error: was (3.7, 2.1, 1,25)
+        (2.6, 7.4, 1.4)   # Fixed syntax error: was (1.2, 4.5, 3,8)
     ]
-    
+
+    try:
+        are_points_equivalent((3.5, 2.4, 4.8), (3.5, 2.4, 4.8))
+        print("Points are equivalent")
+    except Exception as e:
+        print(f"Error with are_points_equivalent: {e}")
+
     p1 = (3.5, 2.4, 4.8)
     p2 = (0.89, 0.41, 1.799)
     
@@ -227,7 +239,7 @@ if __name__ == '__main__':
         print(f"Is E closed? {space.is_closed_set(E)}")
         
         # Test if E is open (using a small radius)
-        print(f"Is E open? {space.is_open_set(E, 0.1)}")
+        print(f"Is E open? {space.is_open_set(E)}")
         
         # Find complement of E in A
         complement_E = space.find_complement_set(E)
