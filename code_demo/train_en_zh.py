@@ -1,17 +1,17 @@
 # =============================================================================
-# Training Demo — English→French Translation (PyTorch CUDA)
-# Uses the Kaggle EN-FR dataset: https://www.kaggle.com/datasets/dhruvildave/en-fr-translation-dataset
+# Training Demo — English→Chinese Translation (PyTorch CUDA)
+# Uses the EN-ZH dataset
 #
 # This script:
-#   1. Downloads / loads the en-fr.csv dataset
-#   2. Builds word-level vocabularies for English (source) and French (target)
+#   1. Downloads / loads the en-zh.csv dataset
+#   2. Builds word-level vocabularies for English (source) and Chinese (target)
 #   3. Tokenizes and pads sentence pairs
 #   4. Trains the Transformer using PyTorch with GPU acceleration
 #   5. Saves the model + vocabularies to model_saved/
 #
 # Prerequisites:
-#   pip install torch
-#   Place en-fr.csv in the project root, or let the script tell you where to put it.
+#   pip install torch tokenizers tqdm sacrebleu
+#   Place en-zh.csv in the project root, or let the script tell you where to put it.
 #
 # Author: Chang Liu
 # =============================================================================
@@ -109,7 +109,8 @@ class Vocabulary:
         self.max_vocab_size = max_vocab_size
         # Initialize BPE model with UNK token
         self.tokenizer = Tokenizer(BPE(unk_token="<UNK>"))
-        # Use Whitespace pre-tokenizer (standard for English/French)
+        # Use Whitespace pre-tokenizer for English
+        # For Chinese, BPE will handle characters correctly if trained on them.
         self.tokenizer.pre_tokenizer = Whitespace()
 
     def build(self, sentences: List[str]):
@@ -260,53 +261,121 @@ def collate_fn(batch, pad_id: int = PAD_ID):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_dataset(
-    csv_path: str,
+    data_path: str,
     max_samples: int = 5000,
     max_seq_len: int = 20
 ) -> Tuple[List[str], List[str]]:
     """
-    Load and filter EN-FR sentence pairs from the Kaggle CSV.
-
-    The CSV has columns: 'en' and 'fr'.
-    We filter to short sentences to keep the demo tractable.
+    Load and filter EN-ZH sentence pairs from CSV or Arrow files.
 
     Args:
-        csv_path:    Path to en-fr.csv.
+        data_path:   Path to en-zh.csv or directory containing .arrow files.
         max_samples: Maximum number of sentence pairs to load.
-        max_seq_len: Maximum sentence length (in words) to keep.
+        max_seq_len: Maximum sentence length (in words/characters) to keep.
 
     Returns:
-        Tuple of (en_sentences, fr_sentences) — lists of strings.
+        Tuple of (en_sentences, zh_sentences) — lists of strings.
     """
     en_sentences = []
-    fr_sentences = []
+    zh_sentences = []
 
     # URL masking regex: replace any URL with a special token to reduce noise
     url_re = re.compile(r"(https?://\S+|www\.[^\s]+)", re.IGNORECASE)
 
     def _mask_urls(text: str) -> str:
+        if not isinstance(text, str):
+            return ""
         return url_re.sub("<URL>", text)
 
-    print(f"Loading dataset from {csv_path} ...")
-    with open(csv_path, "r", encoding="utf-8") as f:
+    print(f"Loading dataset from {data_path} ...")
+    
+    # Check for Arrow files first (WMT18 format)
+    arrow_files = []
+    if os.path.isdir(data_path):
+        arrow_files = [os.path.join(data_path, f) for f in os.listdir(data_path) if f.endswith('.arrow')]
+    
+    if arrow_files:
+        print(f"  Detected {len(arrow_files)} Arrow files. Using 'datasets' library to load...")
+        try:
+            from datasets import load_dataset as load_arrow_dataset
+            # Filter for training files to avoid using test/validation for training if not specified
+            train_files = [f for f in arrow_files if 'train' in os.path.basename(f)]
+            if not train_files:
+                train_files = arrow_files # Fallback to all arrow files
+            
+            ds = load_arrow_dataset('arrow', data_files=train_files, split='train')
+            
+            # Use a generator to iterate through the dataset to avoid loading everything into RAM at once
+            # although we still collect into lists for the current Vocabulary builder.
+            count = 0
+            for item in tqdm(ds, desc="Processing Arrow data", total=min(len(ds), max_samples * 2)): # Estimate total
+                trans = item.get('translation')
+                if not trans:
+                    continue
+                
+                en = _mask_urls(trans.get('en', '').strip())
+                zh = _mask_urls(trans.get('zh', '').strip())
+                
+                if not en or not zh:
+                    continue
+                
+                if (1 <= len(en.split()) <= max_seq_len and 1 <= len(zh) <= max_seq_len * 2):
+                    en_sentences.append(en)
+                    zh_sentences.append(zh)
+                    count += 1
+                
+                if count >= max_samples:
+                    break
+            
+            print(f"  Loaded {len(en_sentences)} sentence pairs from Arrow files.")
+            return en_sentences, zh_sentences
+            
+        except ImportError:
+            print("  Warning: 'datasets' library not found. Please install it with 'pip install datasets'.")
+            print("  Attempting to fallback to CSV loading...")
+        except Exception as e:
+            print(f"  Error loading Arrow files: {e}")
+            print("  Attempting to fallback to CSV loading...")
+
+    # Fallback to CSV loading
+    if os.path.isdir(data_path):
+        actual_path = os.path.join(data_path, "en-zh.csv")
+    else:
+        actual_path = data_path
+
+    if not os.path.exists(actual_path):
+        print(f"Warning: {actual_path} not found. Searching for any .csv file in {data_path}...")
+        if os.path.isdir(data_path):
+            csv_files = [f for f in os.listdir(data_path) if f.endswith('.csv')]
+            if csv_files:
+                actual_path = os.path.join(data_path, csv_files[0])
+                print(f"Using {actual_path}")
+            else:
+                raise FileNotFoundError(f"No CSV or Arrow files found in {data_path}")
+        else:
+            raise FileNotFoundError(f"File {actual_path} not found")
+
+    with open(actual_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            en = _mask_urls(row["en"].strip())
-            fr = _mask_urls(row["fr"].strip())
+            en = _mask_urls((row.get("en") or row.get("english") or row.get("src") or "").strip())
+            zh = _mask_urls((row.get("zh") or row.get("chinese") or row.get("tgt") or "").strip())
 
-            # Filter: keep only short sentences for this demo
+            if not en or not zh:
+                continue
+
             if (
                 1 <= len(en.split()) <= max_seq_len
-                and 1 <= len(fr.split()) <= max_seq_len
+                and 1 <= len(zh) <= max_seq_len * 2
             ):
                 en_sentences.append(en)
-                fr_sentences.append(fr)
+                zh_sentences.append(zh)
 
             if len(en_sentences) >= max_samples:
                 break
 
-    print(f"  Loaded {len(en_sentences)} sentence pairs (max_seq_len={max_seq_len})")
-    return en_sentences, fr_sentences
+    print(f"  Loaded {len(en_sentences)} sentence pairs from CSV.")
+    return en_sentences, zh_sentences
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -356,7 +425,7 @@ def setup_device(device: str = None) -> str:
 
 
 def prepare_data(
-    csv_path: str,
+    data_path: str,
     max_samples: int,
     max_seq_len: int,
     vocab_size: int,
@@ -364,16 +433,16 @@ def prepare_data(
 ) -> Tuple[DataLoader, DataLoader, Vocabulary, Vocabulary, Dict]:
     """Loads dataset, builds vocabularies, and creates DataLoaders."""
     # Load Data
-    en_sentences, fr_sentences = load_dataset(csv_path, max_samples, max_seq_len)
+    en_sentences, zh_sentences = load_dataset(data_path, max_samples, max_seq_len)
 
     # Build Vocabularies
     print("\nBuilding vocabularies ...")
     en_vocab = Vocabulary(max_vocab_size=vocab_size)
-    fr_vocab = Vocabulary(max_vocab_size=vocab_size)
+    zh_vocab = Vocabulary(max_vocab_size=vocab_size)
     en_vocab.build(en_sentences)
-    fr_vocab.build(fr_sentences)
+    zh_vocab.build(zh_sentences)
     print(f"  English vocab size: {en_vocab.size}")
-    print(f"  French  vocab size: {fr_vocab.size}")
+    print(f"  Chinese vocab size: {zh_vocab.size}")
 
     # Create Datasets
     src_max_len = max_seq_len + 1  # +1 for EOS
@@ -381,9 +450,9 @@ def prepare_data(
 
     dataset = TranslationDataset(
         src_sentences=en_sentences,
-        tgt_sentences=fr_sentences,
+        tgt_sentences=zh_sentences,
         src_vocab=en_vocab,
-        tgt_vocab=fr_vocab,
+        tgt_vocab=zh_vocab,
         max_src_len=src_max_len,
         max_tgt_len=tgt_max_len,
     )
@@ -418,15 +487,15 @@ def prepare_data(
     vocab_stats = dataset.get_vocab_stats()
     print(f"\n  📚 Vocabulary Statistics:")
     print(f"     English: {vocab_stats['src_vocab_used']:,} / {vocab_stats['src_vocab_size']:,} tokens used ({vocab_stats['src_vocab_coverage']:.1f}% coverage)")
-    print(f"     French:  {vocab_stats['tgt_vocab_used']:,} / {vocab_stats['tgt_vocab_size']:,} tokens used ({vocab_stats['tgt_vocab_coverage']:.1f}% coverage)")
+    print(f"     Chinese: {vocab_stats['tgt_vocab_used']:,} / {vocab_stats['tgt_vocab_size']:,} tokens used ({vocab_stats['tgt_vocab_coverage']:.1f}% coverage)")
     print(f"     UNK rate: {vocab_stats['unk_rate']:.2f}%")
 
-    return train_loader, val_loader, en_vocab, fr_vocab, vocab_stats
+    return train_loader, val_loader, en_vocab, zh_vocab, vocab_stats
 
 
 def initialize_training(
     en_vocab: Vocabulary,
-    fr_vocab: Vocabulary,
+    zh_vocab: Vocabulary,
     d_model: int,
     num_heads: int,
     d_ff: int,
@@ -442,7 +511,7 @@ def initialize_training(
     print("\nInitializing Transformer model ...")
     model = Transformer(
         src_vocab_size=en_vocab.size,
-        tgt_vocab_size=fr_vocab.size,
+        tgt_vocab_size=zh_vocab.size,
         d_model=d_model,
         num_heads=num_heads,
         d_ff=d_ff,
@@ -637,7 +706,7 @@ def _greedy_decode_single(model: nn.Module, src_ids: List[int], max_len: int, de
 def compute_bleu_on_loader(
     model: nn.Module,
     val_loader: DataLoader,
-    fr_vocab: Vocabulary,
+    zh_vocab: Vocabulary,
     device: str,
     max_tgt_len: int,
 ) -> float:
@@ -667,7 +736,7 @@ def compute_bleu_on_loader(
                     src_ids = src_ids[: eos_pos + 1]
                 # Hypothesis via greedy decode
                 hyp_ids = _greedy_decode_single(model, src_ids, max_tgt_len, device)
-                hyp_text = fr_vocab.decode(hyp_ids)
+                hyp_text = zh_vocab.decode(hyp_ids)
 
                 # Reference: strip BOS and everything after EOS, then decode
                 ref_ids = tgt_batch[i].tolist()
@@ -677,13 +746,15 @@ def compute_bleu_on_loader(
                 # cut at EOS
                 if EOS_ID in ref_ids:
                     ref_ids = ref_ids[: ref_ids.index(EOS_ID)]
-                ref_text = fr_vocab.decode(ref_ids)
+                ref_text = zh_vocab.decode(ref_ids)
 
                 sys_hyps.append(hyp_text)
                 sys_refs.append(ref_text)
 
-    # sacrebleu expects list of hypotheses and list of reference lists
-    bleu = sacrebleu.corpus_bleu(sys_hyps, [sys_refs])
+    # sacrebleu handles Chinese characters well when zh is specified
+    # but we might need to handle tokenization for BLEU calculation on Chinese
+    # sacrebleu's corpus_bleu has a 'tokenize' parameter.
+    bleu = sacrebleu.corpus_bleu(sys_hyps, [sys_refs], tokenize='zh')
     return float(bleu.score)
 
 
@@ -692,7 +763,7 @@ def save_artifacts(
     model: nn.Module,
     optimizer: AdamW,
     en_vocab: Vocabulary,
-    fr_vocab: Vocabulary,
+    zh_vocab: Vocabulary,
     training_history: List[Dict],
     config_params: Dict,
     epoch: int,
@@ -704,7 +775,7 @@ def save_artifacts(
     os.makedirs(save_dir, exist_ok=True)
 
     # Save model state dict
-    model_path = os.path.join(save_dir, "transformer_en_fr.pt")
+    model_path = os.path.join(save_dir, "transformer_en_zh.pt")
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
@@ -725,10 +796,10 @@ def save_artifacts(
 
     # Save vocabularies
     en_vocab_path = os.path.join(save_dir, "en_vocab.json")
-    fr_vocab_path = os.path.join(save_dir, "fr_vocab.json")
+    zh_vocab_path = os.path.join(save_dir, "zh_vocab.json")
     en_vocab.save(en_vocab_path)
-    fr_vocab.save(fr_vocab_path)
-    print(f"  📚 BPE Tokenizers saved to {en_vocab_path}, {fr_vocab_path}")
+    zh_vocab.save(zh_vocab_path)
+    print(f"  📚 BPE Tokenizers saved to {en_vocab_path}, {zh_vocab_path}")
 
     # Save config for test script
     config = {
@@ -736,7 +807,7 @@ def save_artifacts(
         "src_max_len": config_params.get("max_seq_len", 0) + 1,
         "tgt_max_len": config_params.get("max_seq_len", 0) + 2,
         "src_vocab_size": en_vocab.size,
-        "tgt_vocab_size": fr_vocab.size,
+        "tgt_vocab_size": zh_vocab.size,
     }
     config_path = os.path.join(save_dir, "config.json")
     with open(config_path, "w") as f:
@@ -745,8 +816,8 @@ def save_artifacts(
 
 
 def train(
-    csv_path: str,
-    save_dir: str = "../model_saved/transformer_translator_en_fr",
+    data_path: str,
+    save_dir: str = "../model_saved/transformer_translator_en_zh",
     max_samples: int = 200000,
     max_seq_len: int = 50,
     vocab_size: int = 32000,
@@ -770,17 +841,17 @@ def train(
     min_lr: float = 1e-6,
 ):
     """
-    Train the Transformer on the EN-FR dataset using PyTorch with GPU support.
+    Train the Transformer on the EN-ZH dataset using PyTorch with GPU support.
     Uses Adam optimizer with learning rate scheduling as in the original paper.
     """
     device = setup_device(device)
 
-    train_loader, val_loader, en_vocab, fr_vocab, vocab_stats = prepare_data(
-        csv_path, max_samples, max_seq_len, vocab_size, batch_size
+    train_loader, val_loader, en_vocab, zh_vocab, vocab_stats = prepare_data(
+        data_path, max_samples, max_seq_len, vocab_size, batch_size
     )
 
     model, optimizer, scheduler = initialize_training(
-        en_vocab, fr_vocab, d_model, num_heads, d_ff, num_layers,
+        en_vocab, zh_vocab, d_model, num_heads, d_ff, num_layers,
         dropout, learning_rate, weight_decay, warmup_steps, device, min_lr
     )
 
@@ -807,7 +878,7 @@ def train(
     print(f"  Dropout: {dropout}")
     print(f"  Vocabulary Coverage:")
     print(f"     English: {vocab_stats['src_vocab_coverage']:.1f}% ({vocab_stats['src_vocab_used']:,}/{vocab_stats['src_vocab_size']:,})")
-    print(f"     French:  {vocab_stats['tgt_vocab_coverage']:.1f}% ({vocab_stats['tgt_vocab_used']:,}/{vocab_stats['tgt_vocab_size']:,})")
+    print(f"     Chinese: {vocab_stats['tgt_vocab_coverage']:.1f}% ({vocab_stats['tgt_vocab_used']:,}/{vocab_stats['tgt_vocab_size']:,})")
     print(f"  UNK Rate: {vocab_stats['unk_rate']:.2f}%")
     print(f"{'=' * 80}\n")
 
@@ -827,9 +898,9 @@ def train(
         
         # Log vocabulary statistics to TensorBoard
         writer.add_scalar('Vocabulary/en_vocab_size', vocab_stats['src_vocab_size'], 0)
-        writer.add_scalar('Vocabulary/fr_vocab_size', vocab_stats['tgt_vocab_size'], 0)
+        writer.add_scalar('Vocabulary/zh_vocab_size', vocab_stats['tgt_vocab_size'], 0)
         writer.add_scalar('Vocabulary/en_vocab_coverage', vocab_stats['src_vocab_coverage'], 0)
-        writer.add_scalar('Vocabulary/fr_vocab_coverage', vocab_stats['tgt_vocab_coverage'], 0)
+        writer.add_scalar('Vocabulary/zh_vocab_coverage', vocab_stats['tgt_vocab_coverage'], 0)
         writer.add_scalar('Vocabulary/unk_rate', vocab_stats['unk_rate'], 0)
 
     for epoch in range(num_epochs):
@@ -847,7 +918,7 @@ def train(
         )
         # Compute BLEU on the validation set (greedy decoding)
         bleu_score = compute_bleu_on_loader(
-            model, val_loader, fr_vocab, device, max_tgt_len=max_seq_len + 2
+            model, val_loader, zh_vocab, device, max_tgt_len=max_seq_len + 2
         )
         
         epoch_elapsed = time.time() - epoch_start
@@ -939,7 +1010,7 @@ def train(
     }
     
     save_artifacts(
-        save_dir, model, optimizer, en_vocab, fr_vocab, 
+        save_dir, model, optimizer, en_vocab, zh_vocab, 
         training_history, config_params, num_epochs - 1, 
         avg_train_loss, avg_val_loss, 
         avg_bleu=training_history[-1].get('bleu') if len(training_history) > 0 else None
@@ -960,7 +1031,7 @@ def train(
         print(f"\n  📊 TensorBoard logs saved to: {log_dir}")
     
     print(f"\n  To test the model, run:")
-    print(f"    python test_en_fr.py")
+    print(f"    python test_en_zh.py")
     print(f"{'=' * 80}\n")
 
 
@@ -973,43 +1044,39 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
 
-    # Path to the downloaded CSV from Kaggle
-    # Download from: https://www.kaggle.com/datasets/dhruvildave/en-fr-translation-dataset
-    CSV_PATH = "../../../DataSet/kaggle/"
+    # Path to the dataset
+    DATA_PATH = "/home/changliu/DataSet/kaggle/wmt18-en-zh"
 
     # ═══════════════════════════════════════════════════════════════════════
     #  High-Precision Configuration for RTX 5060 Ti
     # ═══════════════════════════════════════════════════════════════════════
     
     train(
-        csv_path=CSV_PATH,
+        data_path=DATA_PATH,
         
         # ── Model Architecture (Transformer Base) ─────────────────────────
         d_model=512,           # Model dimension - standard for good quality
         num_heads=8,           # Attention heads (d_k = 64 per head)
         d_ff=2048,             # FFN hidden dimension (4x expansion)
         num_layers=6,          # Number of encoder/decoder layers
-        dropout=0.1,           # FIX: Increased to 0.3 to bridge Train/Val gap (Paper uses 0.1)           # Regularization
+        dropout=0.2,           # Regularization
         
         # ── Training Configuration ────────────────────────────────────────
         num_epochs=40,         # More epochs for better convergence
         batch_size=64,         # Batch size (adjust based on VRAM)
-        learning_rate=0.0002,  # AdamW learning rate, the upper bound of learning rate should be 1e-4
-        weight_decay=0.01,    # DOCUMENTATION: Helps prevent weight explosion and encourages generalization    # Weight decay (L2 regularization)
-        warmup_steps=4243,     # LR warmup (as per original paper)
+        learning_rate=0.0004,  # AdamW learning rate
+        weight_decay=0.01,     # Weight decay (L2 regularization)
+        warmup_steps=4000,     # LR warmup
         # Early stopping & regularization strategies
         patience=6,
         min_delta=1e-3,
         min_epochs=8,
         label_smoothing=0.1,
         use_amp=True,
-        min_lr=2e-6,
+        min_lr=4e-6,
         
         # ── Data Configuration ────────────────────────────────────────────
-        max_samples=750000,    # Use more data for better quality
+        max_samples=1500000,    # Use more data for better quality
         max_seq_len=64,        # Handle longer sentences
-        # DOCUMENTATION: Switched to BPE (Byte-Pair Encoding) subword tokenization.
-        # Paper uses 37k shared BPE tokens; we use 32k for each language.
-        # This significantly reduces UNK rate and improves grammar learning.
         vocab_size=37000,
     )
